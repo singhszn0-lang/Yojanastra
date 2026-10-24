@@ -18,6 +18,13 @@ class Citizen(Base):
     state = Column(String(100), nullable=False)
     category = Column(String(30))
     annual_income = Column(Numeric(12, 2))
+    household_id = Column(String(100), nullable=True)
+    phone = Column(String(20), nullable=True)
+    aadhaar_last4 = Column(String(4), nullable=True)
+    family_annual_income = Column(Numeric(12, 2), nullable=True)
+    class_12_percentile = Column(Numeric(5, 2), nullable=True)
+    regular_course = Column(Boolean, nullable=True)
+    receives_other_scholarship = Column(Boolean, nullable=True)
     created_at = Column(DateTime)
 
 

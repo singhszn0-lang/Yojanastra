@@ -14,6 +14,16 @@
 .summary-number { font-size:32px !important; font-weight:800; color:#17263d !important; }
 .two-column-panels .action-button { margin-left:24px; }
 .data-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; padding:4px 24px 25px; }
+.family-form .family-id-field { grid-column:1/-1; }
+.family-member { min-width:0; margin:0; padding:16px; border:1px solid #e5eaf1; border-radius:10px; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.family-member legend { padding:0 7px; color:#315e9a; font-size:13px; font-weight:700; }
+.remove-member-button { justify-self:end; grid-column:1/-1; border:0; padding:4px 0; background:transparent; color:#b93838; font-size:12px; font-weight:600; }
+.family-eligibility { grid-column:1/-1; display:grid; gap:12px; }
+.family-eligibility > button { justify-self:start; padding:10px 14px; border-radius:7px; font-size:12px; font-weight:600; }
+.eligibility-preview { padding:14px; background:#f8fbff; border:1px solid #dce7f5; border-radius:8px; color:#34455c; }
+.eligibility-preview ul { display:grid; gap:8px; padding-left:20px; font-size:12px; }
+.eligibility-preview li .status { margin-right:6px; }
+.eligibility-preview small, .family-id-field small { color:#65738a; font-size:11px; line-height:1.5; }
 .data-form label, .review-form label { display:flex; flex-direction:column; gap:8px; font-size:12px; color:#52637a; font-weight:600; }
 .data-form input, .data-form select, .review-form input, .review-form select, .review-form textarea { width:100%; min-height:42px; border:1px solid #dfe5ed; border-radius:7px; padding:10px 12px; background:#fff; color:#26364d; outline:none; }
 .data-form input:focus, .data-form select:focus, .review-form input:focus, .review-form select:focus, .review-form textarea:focus { border-color:#527eaf; box-shadow:0 0 0 3px #eaf1fa; }
@@ -44,7 +54,7 @@
   .nav-item { display:flex !important; width:auto; flex:0 0 auto; padding:10px; }
   .nav-heading { display:block; }
   .sidebar-note { display:none; }
-  .data-form, .scheme-grid, .two-column-panels { grid-template-columns:1fr; }
+  .data-form, .scheme-grid, .two-column-panels, .family-member { grid-template-columns:1fr; }
   .data-form { padding:4px 15px 20px; }
   .scheme-grid { padding:0 15px 20px; }
   .result-card { margin:0 15px 20px; }

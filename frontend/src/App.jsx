@@ -41,6 +41,7 @@ async function api(path, options = {}) {
 const menu = [
   ["Dashboard", "▦"],
   ["Applications", "▤"],
+  ["Register Member", "♙"],
   ["Submit Application", "+"],
   ["Duplicate Review", "◎"],
   ["Schemes", "▣"],
@@ -69,9 +70,43 @@ function Empty({ children = "No records found." }) {
   return <div className="empty-state"><p>{children}</p></div>;
 }
 
+function emptyFamilyMember() {
+  return {
+    full_name: "",
+    age: "",
+    state: "",
+    category: "",
+    annual_income: "",
+    phone: "",
+    aadhaar_last4: "",
+    class_12_percentile: "",
+    regular_course: "",
+    receives_other_scholarship: "",
+    eligibility_result: null,
+  };
+}
+
+function newFamilyForm() {
+  return {
+    household_id: `FAM-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+    family_annual_income: "",
+    members: [
+      {
+        ...emptyFamilyMember(),
+        full_name: "Shreya",
+        age: "19",
+        state: "West Bengal",
+        category: "General",
+        annual_income: "50000",
+      },
+    ],
+  };
+}
+
 export default function App() {
   const [page, setPage] = useState("Dashboard");
   const [applications, setApplications] = useState([]);
+  const [citizens, setCitizens] = useState([]);
   const [schemes, setSchemes] = useState([]);
   const [flags, setFlags] = useState([]);
   const [reviews, setReviews] = useState([]);
@@ -90,10 +125,13 @@ const [token, setToken] = useState(
 const [username, setUsername] = useState("officer");
 const [password, setPassword] = useState("");
 const [loginLoading, setLoginLoading] = useState(false);
+const [reviewLoading, setReviewLoading] = useState(false);
+const [reviewError, setReviewError] = useState("");
 
   const [applicationForm, setApplicationForm] = useState({
     citizen_id: "", scheme_id: "", household_id: ""
   });
+  const [citizenForm, setCitizenForm] = useState(newFamilyForm);
   const [eligibilityForm, setEligibilityForm] = useState({
     scheme_id: "", annual_income: "", age: "", residence: ""
   });
@@ -107,6 +145,7 @@ const loadAll = useCallback(async () => {
 
   const requests = [
     api("/applications"),
+    api("/citizens"),
     api("/schemes"),
     api("/duplicate-flags?review_status="),
     token ? api("/officer-reviews") : Promise.resolve([]),
@@ -124,25 +163,29 @@ const loadAll = useCallback(async () => {
   setApplications(
     Array.isArray(getData(0, [])) ? getData(0, []) : []
   );
-  setSchemes(
+  setCitizens(
     Array.isArray(getData(1, [])) ? getData(1, []) : []
   );
-  setFlags(
+  setSchemes(
     Array.isArray(getData(2, [])) ? getData(2, []) : []
   );
-  setReviews(
+  setFlags(
     Array.isArray(getData(3, [])) ? getData(3, []) : []
   );
-  setLogs(
+  setReviews(
     Array.isArray(getData(4, [])) ? getData(4, []) : []
   );
-  setStats(getData(5, {}) || {});
+  setLogs(
+    Array.isArray(getData(5, [])) ? getData(5, []) : []
+  );
+  setStats(getData(6, {}) || {});
 
   const failed = results
     .map((result, index) => ({
       result,
       path: [
         "/applications",
+        "/citizens",
         "/schemes",
         "/duplicate-flags",
         "/officer-reviews",
@@ -189,7 +232,7 @@ async function handleLogin(event) {
 
     sessionStorage.setItem("yojanastra_token", data.access_token);
     setToken(data.access_token);
-    setPage("Officer Reviews");
+    setPage("Applications");
     setPassword("");
     setNotice("Officer login successful.");
 
@@ -227,6 +270,79 @@ useEffect(() => {
     window.setTimeout(() => setNotice(""), 4500);
   }
 
+  function openApplication(app) {
+    setSelectedApp(app);
+    setReviewError("");
+    setReviewForm({ officer_name: "Demo Officer", decision: "APPROVE", remarks: "" });
+  }
+
+  async function registerFamily(e) {
+    e.preventDefault();
+    try {
+      const incompleteMember = citizenForm.members.find(member =>
+        !member.full_name.trim() || !member.state.trim()
+      );
+      if (incompleteMember) {
+        throw new Error("Every family member needs a full name and state.");
+      }
+
+      const result = await api("/families", {
+        method: "POST",
+        body: JSON.stringify({
+          household_id: citizenForm.household_id.trim(),
+          members: citizenForm.members.map(member => ({
+            full_name: member.full_name.trim(),
+            age: member.age === "" ? null : Number(member.age),
+            state: member.state.trim(),
+            category: member.category.trim() || null,
+            annual_income: member.annual_income === "" ? null : Number(member.annual_income),
+            phone: member.phone.trim() || null,
+            aadhaar_last4: member.aadhaar_last4.trim() || null,
+            family_annual_income: citizenForm.family_annual_income === "" ? null : Number(citizenForm.family_annual_income),
+            class_12_percentile: member.class_12_percentile === "" ? null : Number(member.class_12_percentile),
+            regular_course: member.regular_course === "" ? null : member.regular_course === "true",
+            receives_other_scholarship: member.receives_other_scholarship === "" ? null : member.receives_other_scholarship === "true",
+          })),
+        }),
+      });
+      const firstMember = result.members[0];
+      setCitizenForm(newFamilyForm);
+      setApplicationForm(form => ({
+        ...form,
+        citizen_id: String(firstMember.citizen_id),
+        household_id: result.household_id,
+      }));
+      await loadAll();
+      setPage("Submit Application");
+      flash(`${result.message}. Household ID: ${result.household_id}.`);
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function checkFamilyMemberEligibility(index) {
+    try {
+      const member = citizenForm.members[index];
+      const result = await api("/eligibility/csss-preview", {
+        method: "POST",
+        body: JSON.stringify({
+          family_annual_income: citizenForm.family_annual_income === "" ? null : Number(citizenForm.family_annual_income),
+          class_12_percentile: member.class_12_percentile === "" ? null : Number(member.class_12_percentile),
+          regular_course: member.regular_course === "" ? null : member.regular_course === "true",
+          receives_other_scholarship: member.receives_other_scholarship === "" ? null : member.receives_other_scholarship === "true",
+        }),
+      });
+      setCitizenForm(form => ({
+        ...form,
+        members: form.members.map((row, rowIndex) =>
+          rowIndex === index ? { ...row, eligibility_result: result } : row
+        ),
+      }));
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
   async function submitApplication(e) {
     e.preventDefault();
     try {
@@ -256,16 +372,18 @@ useEffect(() => {
     } catch (e) { setError(e.message); }
   }
 
-  async function submitReview(flag) {
+  async function submitReview(target, decision = reviewForm.decision) {
+    setReviewLoading(true);
+    setReviewError("");
     try {
       const payload = {
-        application_id: Number(flag.application_id),
+        application_id: Number(target.application_id),
         officer_name: reviewForm.officer_name.trim(),
-        decision: reviewForm.decision,
+        decision,
         remarks: reviewForm.remarks.trim(),
       };
       if (!payload.officer_name || !payload.remarks) {
-        setError("Officer name aur remarks dono fill karna zaroori hai.");
+        setReviewError("Please enter review remarks before deciding.");
         return;
       }
       const result = await api("/officer-reviews", { method: "POST", body: JSON.stringify(payload) });
@@ -273,25 +391,19 @@ useEffect(() => {
       setReviewForm({ officer_name: "Demo Officer", decision: "NOT_DUPLICATE", remarks: "" });
       flash(result.message || "Officer review saved.");
       await loadAll();
-    } catch (e) { setError(e.message); }
-  }
-
-  async function changeApplicationStatus(app, status) {
-    // Existing API only changes status through a duplicate-flag officer review.
-    const flag = flags.find(f => f.application_id === app.application_id && ["PENDING", "NEEDS_INFO"].includes(f.review_status));
-    if (!flag) {
-      setError("Is application ke liye direct approve/reject endpoint abhi backend mein available nahi hai. Duplicate Review workflow use karo, ya backend mein status endpoint add karna hoga.");
-      return;
+    } catch (e) {
+      setReviewError(e.message);
+    } finally {
+      setReviewLoading(false);
     }
-    setSelectedApp({ ...app, _flag: flag, _quickDecision: status });
-    setReviewForm({ officer_name: "Demo Officer", decision: status, remarks: "" });
   }
 
   const pageTitle = page;
   const pageSubtitle = {
     Dashboard: "Public benefit applications ka live overview.",
     Applications: "Search, filter aur application details review karo.",
-    "Submit Application": "Synthetic demo citizen ke liye application submit karo.",
+    "Register Member": "Naye member ki details save karke citizen ID generate karo.",
+    "Submit Application": "Registered member ko scheme ke liye apply karo.",
     "Duplicate Review": "Possible repeat applications ko human review ke liye check karo.",
     Schemes: "Backend se available benefit schemes.",
     "Eligibility Checker": "Backend eligibility logic aur evidence explanation check karo.",
@@ -345,7 +457,7 @@ useEffect(() => {
           ].map(([label, value, color, icon]) => <div className="stat-card" key={label}><div className="stat-top"><span>{label}</span><span className={`stat-icon ${color}`}>{icon}</span></div><strong>{value}</strong><small>Backend-reported count</small></div>)}
         </div>
         <Panel title="Recent Applications" description="Latest applications returned by the API" action={<button className="view-button" onClick={() => setPage("Applications")}>View all →</button>}>
-          <ApplicationsTable rows={applications.slice(0, 5)} onView={setSelectedApp} />
+          <ApplicationsTable rows={applications.slice(0, 5)} onView={openApplication} />
         </Panel>
         <div className="two-column-panels"><Panel title="Review Queue" description="Possible duplicates requiring attention"><p className="summary-number">{flags.filter(f => ["PENDING", "NEEDS_INFO"].includes(f.review_status)).length}</p><button className="primary-button action-button" onClick={() => setPage("Duplicate Review")}>Open duplicate review</button></Panel>
         <Panel title="System status" description="Current configuration"><p>API: <strong>{error ? "Check connection" : "FastAPI"}</strong></p><p>Storage: <strong>PostgreSQL</strong></p><p>Database: <strong>{error ? "Check connection" : "Connected"}</strong></p></Panel></div>
@@ -353,12 +465,41 @@ useEffect(() => {
 
       {page === "Applications" && <Panel title="Applications" description="Search by applicant, citizen ID, application ID or scheme." action={<button className="primary-button action-button" onClick={() => setPage("Submit Application")}>+ New application</button>}>
         <div className="toolbar"><input className="search-input" placeholder="Search applications…" value={query} onChange={e => setQuery(e.target.value)} /><select className="filter-select" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}><option>All</option><option value="PENDING">Pending</option><option value="APPROVED">Approved</option><option value="REJECTED">Rejected</option></select></div>
-        <ApplicationsTable rows={filteredApps} onView={setSelectedApp} />
+        <ApplicationsTable rows={filteredApps} onView={openApplication} />
       </Panel>}
 
-      {page === "Submit Application" && <Panel title="Submit an application" description="Use a citizen already registered in the backend database.">
+      {page === "Register Member" && <Panel title="Register a family" description="Add as many family members as needed. Preview PM-USP CSSS eligibility for each member and review any flagged rules.">
+        <form className="data-form family-form" onSubmit={registerFamily}>
+          <label className="family-id-field">Household ID *<input required maxLength="100" value={citizenForm.household_id} onChange={e => setCitizenForm({...citizenForm, household_id:e.target.value})} /></label>
+          <label className="family-id-field">Annual family income (₹)<input type="number" min="0" step="0.01" value={citizenForm.family_annual_income} onChange={e => setCitizenForm(form => ({...form, family_annual_income:e.target.value, members:form.members.map(member => ({...member, eligibility_result:null}))}))} /><small>Used for the CSSS preview; this is separate from each member's individual income.</small></label>
+          {citizenForm.members.map((member, index) => {
+            return <fieldset className="family-member" key={index}>
+              <legend>Family member {index + 1}</legend>
+              {citizenForm.members.length > 1 && <button className="remove-member-button" type="button" onClick={() => setCitizenForm(form => ({...form, members:form.members.filter((_, rowIndex) => rowIndex !== index)}))}>Remove member</button>}
+              <label>Full name *<input required maxLength="120" value={member.full_name} onChange={e => setCitizenForm(form => ({...form, members:form.members.map((row, rowIndex) => rowIndex === index ? {...row, full_name:e.target.value} : row)}))} placeholder="Member's full name" /></label>
+              <label>Age<input type="number" min="0" max="120" value={member.age} onChange={e => setCitizenForm(form => ({...form, members:form.members.map((row, rowIndex) => rowIndex === index ? {...row, age:e.target.value} : row)}))} /></label>
+              <label>State *<input required maxLength="100" value={member.state} onChange={e => setCitizenForm(form => ({...form, members:form.members.map((row, rowIndex) => rowIndex === index ? {...row, state:e.target.value} : row)}))} placeholder="e.g. West Bengal" /></label>
+              <label>Category<input maxLength="30" value={member.category} onChange={e => setCitizenForm(form => ({...form, members:form.members.map((row, rowIndex) => rowIndex === index ? {...row, category:e.target.value} : row)}))} placeholder="Optional" /></label>
+              <label>Annual income (₹)<input type="number" min="0" step="0.01" value={member.annual_income} onChange={e => setCitizenForm(form => ({...form, members:form.members.map((row, rowIndex) => rowIndex === index ? {...row, annual_income:e.target.value} : row)}))} /></label>
+              <label>Phone number<input type="tel" maxLength="20" value={member.phone} onChange={e => setCitizenForm(form => ({...form, members:form.members.map((row, rowIndex) => rowIndex === index ? {...row, phone:e.target.value} : row)}))} placeholder="Optional" /></label>
+              <label>Aadhaar last 4 digits<input inputMode="numeric" pattern="[0-9]{4}" maxLength="4" value={member.aadhaar_last4} onChange={e => setCitizenForm(form => ({...form, members:form.members.map((row, rowIndex) => rowIndex === index ? {...row, aadhaar_last4:e.target.value.replace(/\D/g, "").slice(0, 4)} : row)}))} placeholder="Optional; full Aadhaar is not stored" /></label>
+              <label>Class XII board percentile<input type="number" min="0" max="100" step="0.01" value={member.class_12_percentile} onChange={e => setCitizenForm(form => ({...form, members:form.members.map((row, rowIndex) => rowIndex === index ? {...row, class_12_percentile:e.target.value, eligibility_result:null} : row)}))} placeholder="0–100" /></label>
+              <label>Enrolled in a regular degree course<select value={member.regular_course} onChange={e => setCitizenForm(form => ({...form, members:form.members.map((row, rowIndex) => rowIndex === index ? {...row, regular_course:e.target.value, eligibility_result:null} : row)}))}><option value="">Not provided</option><option value="true">Yes</option><option value="false">No</option></select></label>
+              <label>Receiving another scholarship<select value={member.receives_other_scholarship} onChange={e => setCitizenForm(form => ({...form, members:form.members.map((row, rowIndex) => rowIndex === index ? {...row, receives_other_scholarship:e.target.value, eligibility_result:null} : row)}))}><option value="">Not provided</option><option value="false">No</option><option value="true">Yes</option></select></label>
+              <div className="family-eligibility">
+                <button className="secondary-button" type="button" onClick={() => checkFamilyMemberEligibility(index)}>Check PM-USP CSSS rules</button>
+                {member.eligibility_result && <div className="eligibility-preview"><strong>{member.eligibility_result.status.replaceAll("_", " ")}</strong><ul>{member.eligibility_result.flags.map(flag => <li key={flag.rule}><Status value={flag.status} /> {flag.rule}: {flag.requirement}</li>)}</ul><small>{member.eligibility_result.note}</small></div>}
+              </div>
+            </fieldset>;
+          })}
+          <div className="form-actions"><button className="secondary-button" type="button" onClick={() => setCitizenForm(form => ({...form, members:[...form.members, emptyFamilyMember()]}))}>+ Add family member</button><button className="primary-button" type="submit">Register family members</button><button className="secondary-button" type="button" onClick={() => setCitizenForm(form => ({...form, members:[emptyFamilyMember()]}))}>Clear member details</button></div>
+        </form>
+      </Panel>}
+
+      {page === "Submit Application" && <Panel title="Submit an application" description="Choose a registered member. Reuse the same member and scheme to check for a possible duplicate.">
         <form className="data-form" onSubmit={submitApplication}>
-          <label>Registered citizen ID *<input required maxLength="100" value={applicationForm.citizen_id} onChange={e => setApplicationForm({...applicationForm, citizen_id:e.target.value})} placeholder="Enter the registered citizen ID" /></label>
+          <label>Registered member *<select required value={applicationForm.citizen_id} onChange={e => {const member=citizens.find(c=>String(c.citizen_id)===e.target.value);setApplicationForm({...applicationForm, citizen_id:e.target.value, household_id:member?.household_id || ""});}}><option value="">Select a registered member</option>{citizens.map(c => <option key={c.citizen_id} value={c.citizen_id}>#{c.citizen_id} — {c.full_name} ({c.state}){c.household_id ? ` · ${c.household_id}` : ""}</option>)}</select></label>
+          {citizens.length === 0 && <p>No members are registered yet. <button className="view-button" type="button" onClick={() => setPage("Register Member")}>Register a new member</button></p>}
           <label>Scheme *<select required value={applicationForm.scheme_id} onChange={e => setApplicationForm({...applicationForm, scheme_id:e.target.value})}><option value="">Select a scheme</option>{schemes.filter(s => s.is_active).map(s => <option key={s.scheme_id} value={s.scheme_id}>{s.name}</option>)}</select></label>
           <label>Household ID<input maxLength="100" value={applicationForm.household_id} onChange={e => setApplicationForm({...applicationForm, household_id:e.target.value})} placeholder="Optional synthetic household ID" /></label>
           <div className="form-actions"><button className="primary-button" type="submit">Submit application</button><button className="secondary-button" type="button" onClick={() => setApplicationForm({citizen_id:"",scheme_id:"",household_id:""})}>Clear form</button></div>
@@ -396,9 +537,9 @@ useEffect(() => {
         <p>You are authenticated.</p>
         <button
           className="primary-button"
-          onClick={() => setPage("Officer Reviews")}
+          onClick={() => setPage("Applications")}
         >
-          Open Officer Reviews
+          Review applications
         </button>
       </div>
     ) : (
@@ -457,8 +598,10 @@ useEffect(() => {
       <><p className="modal-description">Application details returned from backend. Use synthetic records only.</p><div className="detail-grid">
         <div><label>Application ID</label><p>#{selectedApp.application_id}</p></div><div><label>Applicant</label><p>{selectedApp.applicant_name || "—"}</p></div><div><label>Citizen ID</label><p>{selectedApp.citizen_id || "—"}</p></div><div><label>Scheme</label><p>{selectedApp.scheme_name || "—"}</p></div><div><label>Annual income</label><p>{selectedApp.annual_income == null ? "Not provided" : `₹${selectedApp.annual_income}`}</p></div><div><label>Household ID</label><p>{selectedApp.household_id || "—"}</p></div><div><label>Status</label><p><Status value={selectedApp.status}/></p></div><div><label>Submitted</label><p>{formatDate(selectedApp.created_at)}</p></div>
       </div>
-      {selectedApp._flag && <div className="review-form"><h3>Officer review</h3><label>Officer name<input value={reviewForm.officer_name} onChange={e=>setReviewForm({...reviewForm,officer_name:e.target.value})}/></label><label>Decision<select value={reviewForm.decision} onChange={e=>setReviewForm({...reviewForm,decision:e.target.value})}><option value="NOT_DUPLICATE">Not duplicate</option><option value="CONFIRMED_DUPLICATE">Confirmed duplicate</option><option value="NEEDS_INFO">Needs more information</option><option value="APPROVE">Approve</option><option value="REJECT">Reject</option></select></label><label>Remarks *<textarea required value={reviewForm.remarks} onChange={e=>setReviewForm({...reviewForm,remarks:e.target.value})} placeholder="Explain the reason for this decision."/></label><p className="review-warning">Possible duplicate flags are decision-support signals, not proof of fraud. Record the reason for your decision.</p><div className="modal-actions"><button className="secondary-button" onClick={()=>setSelectedApp(null)}>Cancel</button><button className="primary-button" onClick={()=>submitReview(selectedApp._flag)}>Save review</button></div></div>}
-      {!selectedApp._flag && <div className="modal-actions"><button className="secondary-button" onClick={()=>setSelectedApp(null)}>Close</button>{selectedApp.application_id && <button className="primary-button" onClick={()=>changeApplicationStatus(selectedApp,"APPROVE")}>Review action</button>}</div>}
+      {selectedApp._flag && token && <div className="review-form"><h3>Officer review</h3><label>Officer name<input value={reviewForm.officer_name} onChange={e=>setReviewForm({...reviewForm,officer_name:e.target.value})}/></label><label>Decision<select value={reviewForm.decision} onChange={e=>setReviewForm({...reviewForm,decision:e.target.value})}><option value="NOT_DUPLICATE">Not duplicate</option><option value="CONFIRMED_DUPLICATE">Confirmed duplicate</option><option value="NEEDS_INFO">Needs more information</option><option value="APPROVE">Approve</option><option value="REJECT">Reject</option></select></label><label>Remarks *<textarea required value={reviewForm.remarks} onChange={e=>{setReviewForm({...reviewForm,remarks:e.target.value});setReviewError("");}} placeholder="Explain the reason for this decision."/></label><p className="review-warning">Possible duplicate flags are decision-support signals, not proof of fraud. Record the reason for your decision.</p>{reviewError && <p className="review-error" role="alert">{reviewError}</p>}<div className="modal-actions"><button className="secondary-button" onClick={()=>setSelectedApp(null)}>Cancel</button><button className="primary-button" disabled={reviewLoading} onClick={()=>submitReview(selectedApp._flag)}>{reviewLoading ? "Saving..." : "Save review"}</button></div></div>}
+      {selectedApp._flag && !token && <div className="review-form"><p>Officer login is required to record a review.</p><div className="modal-actions"><button className="secondary-button" onClick={()=>setSelectedApp(null)}>Close</button><button className="primary-button" onClick={()=>{setSelectedApp(null);setPage("Officer Login");}}>Officer login to review</button></div></div>}
+      {!selectedApp._flag && selectedApp.application_id && token && selectedApp.status === "PENDING" && <div className="review-form"><h3>Officer decision</h3><p>Review the application details, then accept or reject this pending application. A reason is required.</p><label>Review remarks *<textarea required value={reviewForm.remarks} onChange={e=>{setReviewForm({...reviewForm,remarks:e.target.value});setReviewError("");}} placeholder="Explain the reason for your decision."/></label>{reviewError && <p className="review-error" role="alert">{reviewError}</p>}<div className="modal-actions"><button className="secondary-button" onClick={()=>setSelectedApp(null)}>Cancel</button><button className="primary-button" disabled={reviewLoading} onClick={()=>submitReview(selectedApp, "APPROVE")}>{reviewLoading ? "Saving..." : "Accept application"}</button><button className="danger-button" disabled={reviewLoading} onClick={()=>submitReview(selectedApp, "REJECT")}>{reviewLoading ? "Saving..." : "Reject application"}</button></div></div>}
+      {!selectedApp._flag && <div className="modal-actions"><button className="secondary-button" onClick={()=>setSelectedApp(null)}>Close</button>{selectedApp.application_id && !token && selectedApp.status === "PENDING" && <button className="primary-button" onClick={()=>{setSelectedApp(null);setPage("Officer Login");}}>Officer login to review</button>}</div>}
       </>}
     </div></div>}
   </div>;

@@ -21,6 +21,81 @@ SCHEME_RULES = {
     },
 }
 
+CSSS_RULES_NOTE = (
+    "Preliminary demo screening only. This does not verify board-specific "
+    "cut-offs, course exclusions, documents, or current rules. Confirm "
+    "eligibility on the National Scholarship Portal before applying."
+)
+
+
+def check_csss_eligibility(applicant: dict[str, Any]) -> dict[str, Any]:
+    checks = [
+        (
+            "Class XII board percentile",
+            applicant.get("class_12_percentile"),
+            lambda value: value >= 80,
+            "Must be in the top 20 percentile of the relevant board.",
+        ),
+        (
+            "Annual family income",
+            applicant.get("family_annual_income"),
+            lambda value: value <= 450000,
+            "Must not exceed ₹4,50,000 per year.",
+        ),
+        (
+            "Regular degree course",
+            applicant.get("regular_course"),
+            lambda value: value is True,
+            "The student must be pursuing a regular degree course.",
+        ),
+        (
+            "Other scholarship",
+            applicant.get("receives_other_scholarship"),
+            lambda value: value is False,
+            "The student must not receive another scholarship.",
+        ),
+    ]
+
+    flags = []
+    missing_fields = []
+    failed_checks = []
+
+    for label, value, passes, requirement in checks:
+        if value is None:
+            missing_fields.append(label)
+            flags.append({
+                "rule": label,
+                "status": "NEEDS_VERIFICATION",
+                "requirement": requirement,
+            })
+        elif passes(value):
+            flags.append({
+                "rule": label,
+                "status": "PASS",
+                "requirement": requirement,
+            })
+        else:
+            failed_checks.append(label)
+            flags.append({
+                "rule": label,
+                "status": "FAIL",
+                "requirement": requirement,
+            })
+
+    status = (
+        "NOT_ELIGIBLE" if failed_checks else
+        "NEEDS_VERIFICATION" if missing_fields else
+        "ELIGIBLE"
+    )
+    return {
+        "scheme": "PM-USP Central Sector Scheme of Scholarship (CSSS)",
+        "status": status,
+        "flags": flags,
+        "missing_fields": missing_fields,
+        "failed_checks": failed_checks,
+        "note": CSSS_RULES_NOTE,
+    }
+
 
 def check_eligibility(applicant: dict[str, Any]) -> dict[str, Any]:
     required_fields = ["scheme_id", "annual_income", "age", "residence"]

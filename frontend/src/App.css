@@ -550,6 +550,13 @@ td strong {
   line-height: 1.6;
 }
 
+.review-error {
+  margin: 0;
+  color: #b93838;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -722,4 +729,3 @@ td strong {
     width: 100%;
   }
 }
-
