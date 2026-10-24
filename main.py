@@ -1,22 +1,36 @@
-
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timezone, timedelta
 from typing import Literal, Optional
-from evidence import generate_evidence
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 
+import jwt
+from dotenv import load_dotenv
+from pwdlib import PasswordHash
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Depends,
+)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import (
+    OAuth2PasswordBearer,
+    OAuth2PasswordRequestForm,
+)
+from pydantic import BaseModel, Field
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+import models
+from database import get_db
+from models import Application, Scheme, DuplicateFlag, OfficerReview
+from evidence import generate_evidence
+
+load_dotenv()
 
 app = FastAPI(
     title="Yojanastra API",
     description="Public Benefit Application Verification System",
     version="1.0.0",
 )
-
-from datetime import datetime, timezone
-import jwt
-import os
-from pwdlib import PasswordHash
 
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 if not JWT_SECRET_KEY:
