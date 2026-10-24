@@ -44,6 +44,7 @@ const menu = [
   ["Duplicate Review", "◎"],
   ["Schemes", "▣"],
   ["Eligibility Checker", "✓"],
+  ["Officer Login", "♙"],
   ["Officer Reviews", "◉"],
   ["Audit Log", "◷"],
 ];
@@ -187,6 +188,7 @@ async function handleLogin(event) {
 
     sessionStorage.setItem("yojanastra_token", data.access_token);
     setToken(data.access_token);
+    setPage("Officer Reviews");
     setPassword("");
     setNotice("Officer login successful.");
 
@@ -295,47 +297,24 @@ useEffect(() => {
     Schemes: "Backend se available benefit schemes.",
     "Eligibility Checker": "Backend eligibility logic aur evidence explanation check karo.",
     "Officer Reviews": "Officer ke saved review decisions.",
-    "Audit Log": "Recent system aur officer activity records."
+    "Audit Log": "Recent system aur officer activity records.",
+    "Officer Login": "Secure access for authorized officers."
   }[page];
 
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><div className="brand-logo"> 
-{token ? (
+
+{token && (
   <button
     className="secondary-button action-button"
     onClick={handleLogout}
   >
     Logout
   </button>
-) : (
- <form onSubmit={handleLogin} className="login-form">
-    <input
-  className="login-input"
-  value={username}
-  onChange={(e) => setUsername(e.target.value)}
-  placeholder="Username"
-  required
-/>
-
-<input
-  className="login-input"
-  type="password"
-  value={password}
-  onChange={(e) => setPassword(e.target.value)}
-  placeholder="Password"
-  required
-/>
-    
-    <button
-      className="primary-button login-button"
-      type="submit"
-      disabled={loginLoading}
-    >
-      {loginLoading ? "Logging in..." : "Officer Login"}
-    </button>
-  </form>
 )}
+
+
 </div><div><h2>Yojanastra</h2><p>Benefit Intelligence System</p></div></div>
       <p className="nav-heading">WORKSPACE</p>
       <nav className="nav-list">
@@ -408,6 +387,61 @@ useEffect(() => {
         </form>
         {eligibilityResult && <div className="result-card"><h3>Eligibility result</h3><pre>{JSON.stringify(eligibilityResult, null, 2)}</pre><p><strong>Evidence note:</strong> {eligibilityResult.evidence_note || "No evidence note returned."}</p>{Array.isArray(eligibilityResult.evidence) && <ul>{eligibilityResult.evidence.map((item,i)=><li key={i}>{typeof item === "string" ? item : JSON.stringify(item)}</li>)}</ul>}</div>}
       </Panel>}
+      
+{page === "Officer Login" && (
+  <Panel
+    title="Officer Login"
+    description="Authorized officers ke liye secure access."
+  >
+    {token ? (
+      <div className="result-card">
+        <h3>Officer already logged in</h3>
+        <p>You are authenticated.</p>
+        <button
+          className="primary-button"
+          onClick={() => setPage("Officer Reviews")}
+        >
+          Open Officer Reviews
+        </button>
+      </div>
+    ) : (
+      <form className="data-form" onSubmit={handleLogin}>
+        <label>
+          Officer Username
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            placeholder="Enter username"
+            required
+          />
+        </label>
+
+        <label>
+          Password
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Enter password"
+            required
+          />
+        </label>
+
+        <button
+          className="primary-button"
+          type="submit"
+          disabled={loginLoading}
+        >
+          {loginLoading ? "Logging in..." : "Login securely"}
+        </button>
+
+        <p>Demo username: officer</p>
+        <p>Demo password: DemoPass123!</p>
+      </form>
+    )}
+  </Panel>
+)}
+
 
       {page === "Officer Reviews" && <Panel title="Officer reviews" description="Review decisions recorded by the backend.">
         {reviews.length === 0 ? <Empty>No officer reviews have been saved yet.</Empty> : <div className="table-wrapper"><table><thead><tr><th>Review</th><th>Application</th><th>Officer</th><th>Decision</th><th>Remarks</th><th>Created</th></tr></thead><tbody>{reviews.map(r=><tr key={r.review_id}><td>#{r.review_id}</td><td>#{r.application_id}</td><td>{r.officer_name}</td><td><Status value={r.decision}/></td><td className="remarks-cell">{r.remarks}</td><td>{formatDate(r.created_at)}</td></tr>)}</tbody></table></div>}
