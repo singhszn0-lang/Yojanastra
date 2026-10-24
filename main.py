@@ -1,20 +1,10 @@
-import os
-import jwt
 
-from datetime import timedelta
-from fastapi import Depends
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pwdlib import PasswordHash
-from eligibility import check_eligibility
 from datetime import datetime, timezone
 from typing import Literal, Optional
 from evidence import generate_evidence
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from datetime import timedelta
-from fastapi import Depends
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 
 app = FastAPI(
@@ -148,39 +138,7 @@ app.add_middleware(
 # Data resets whenever the server process restarts.
 # --------------------------------------------------
 
-schemes = [
-    {
-        "scheme_id": 1,
-        "name": "Student Education Assistance",
-        "category": "Education",
-        "description": "Demo scheme for education assistance.",
-        "is_active": True,
-    },
-    {
-        "scheme_id": 2,
-        "name": "Household Welfare Support",
-        "category": "Welfare",
-        "description": "Demo scheme for household welfare.",
-        "is_active": True,
-    },
-    {
-        "scheme_id": 3,
-        "name": "Rural Livelihood Assistance",
-        "category": "Livelihood",
-        "description": "Demo scheme for livelihood assistance.",
-        "is_active": True,
-    },
-]
 
-applications = []
-duplicate_flags = []
-officer_reviews = []
-audit_logs = []
-
-next_application_id = 1
-next_flag_id = 1
-next_review_id = 1
-next_log_id = 1
 
 
 # --------------------------------------------------
@@ -265,27 +223,32 @@ def home():
         "project": "Yojanastra",
         "message": "Backend is running!",
         "status": "success",
-        "mode": "mock_data",
-        "database_connected": False,
+       "mode": "postgresql",
+      "database_connected": True,
     }
 
 
 @app.get("/health")
-def health_check():
+def health_check(db: Session = Depends(get_db)):
+    db.execute(func.now().select())
     return {
         "status": "healthy",
-        "database": "not_connected_yet",
+        "database": "connected",
     }
-
-
 # --------------------------------------------------
 # SCHEMES
 # --------------------------------------------------
 
-@app.get("/schemes")
-def get_schemes():
-    return schemes
+@app.get("/schemes/{scheme_id}")
+def get_scheme(scheme_id: int, db: Session = Depends(get_db)):
+    scheme = db.query(Scheme).filter(
+        Scheme.scheme_id == scheme_id
+    ).first()
 
+    if not scheme:
+        raise HTTPException(404, "Scheme not found")
+
+    return scheme
 
 @app.get("/schemes/{scheme_id}")
 def get_scheme(scheme_id: int):
@@ -301,18 +264,31 @@ def get_scheme(scheme_id: int):
 # --------------------------------------------------
 
 @app.get("/dashboard/stats")
-def dashboard_stats():
+def dashboard_stats(db: Session = Depends(get_db)):
     return {
-        "total_applications": len(applications),
-        "pending_applications": sum(
-            a["status"] == "PENDING" for a in applications
-        ),
-        "total_duplicate_flags": len(duplicate_flags),
-        "pending_reviews": sum(
-            f["review_status"] == "PENDING" for f in duplicate_flags
-        ),
-        "completed_reviews": len(officer_reviews),
-        "total_schemes": len(schemes),
+        "total_applications":
+            db.query(Application).count(),
+
+        "pending_applications":
+            db.query(Application)
+            .filter(Application.status == "PENDING")
+            .count(),
+
+        "total_duplicate_flags":
+            db.query(DuplicateFlag).count(),
+
+        "pending_reviews":
+            db.query(DuplicateFlag)
+            .filter(DuplicateFlag.review_status == "PENDING")
+            .count(),
+
+        "completed_reviews":
+            db.query(OfficerReview).count(),
+
+        "total_schemes":
+            db.query(Scheme)
+            .filter(Scheme.is_active == True)
+            .count(),
     }
 
 
@@ -320,17 +296,42 @@ def dashboard_stats():
 # SUBMIT APPLICATION
 # --------------------------------------------------
 
-@app.post("/applications", status_code=201)
-def create_application(application: ApplicationCreate):
-    global next_application_id, next_flag_id
 
-    scheme = next(
-        (
-            s for s in schemes
-            if s["scheme_id"] == application.scheme_id
-            and s["is_active"]
-        ),
-        None,
+@app.post("/applications", status_code=201)
+def create_application(
+    application: ApplicationCreate,
+    db: Session = Depends(get_db),
+):
+    # 1. Validate the citizen ID sent by the frontend.
+    try:
+        citizen_id = int(application.citizen_id)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=422,
+            detail="citizen_id must be a valid integer",
+        )
+
+    # 2. Verify the citizen exists in PostgreSQL.
+    citizen = (
+        db.query(models.Citizen)
+        .filter(models.Citizen.citizen_id == citizen_id)
+        .first()
+    )
+
+    if not citizen:
+        raise HTTPException(
+            status_code=404,
+            detail="Citizen not found. Register the citizen first.",
+        )
+
+    # 3. Fetch the active scheme from PostgreSQL.
+    scheme = (
+        db.query(models.Scheme)
+        .filter(
+            models.Scheme.scheme_id == application.scheme_id,
+            models.Scheme.is_active.is_(True),
+        )
+        .first()
     )
 
     if not scheme:
@@ -483,27 +484,7 @@ def get_duplicate_flags(review_status: Optional[str] = "PENDING"):
 # --------------------------------------------------
 
 @app.post("/officer-reviews", status_code=201)
-
-# --------------------------------------------------
-# OFFICER REVIEW
-# --------------------------------------------------
-
-def require_officer(
-    current_user: dict = Depends(get_current_user),
-):
-    if current_user["role"] != "OFFICER":
-        raise HTTPException(
-            status_code=403,
-            detail="Officer access required",
-        )
-    return current_user
-
-
-@app.post("/officer-reviews", status_code=201)
-def create_officer_review(
-    review: OfficerReviewCreate,
-    current_user: dict = Depends(require_officer),
-):
+def create_officer_review(review: OfficerReviewCreate):
     global next_review_id
 
     flag = next(
@@ -516,11 +497,15 @@ def create_officer_review(
 
     if not flag:
         raise HTTPException(
-            status_code=404,
-            detail="No duplicate flag found for this application",
+            status_code=422,
+            detail="Citizen does not meet the scheme's maximum age rule",
         )
 
-    if flag["review_status"] not in ("PENDING", "NEEDS_INFO"):
+    if (
+        scheme.max_annual_income is not None
+        and citizen.annual_income is not None
+        and citizen.annual_income > scheme.max_annual_income
+    ):
         raise HTTPException(
             status_code=409,
             detail="This flag has already received a final review",
@@ -532,13 +517,14 @@ def create_officer_review(
     saved_review = {
         "review_id": review_id,
         "application_id": review.application_id,
-        "officer_name": current_user["username"],
+        "officer_name": review.officer_name,
         "decision": review.decision,
         "remarks": review.remarks,
         "created_at": now_utc(),
     }
 
     officer_reviews.append(saved_review)
+
     flag["review_status"] = review.decision
 
     application = next(
@@ -549,6 +535,7 @@ def create_officer_review(
         None,
     )
 
+    # Update application status only for explicit final decisions.
     if application:
         if review.decision == "APPROVE":
             application["status"] = "APPROVED"
@@ -565,8 +552,8 @@ def create_officer_review(
         "APPLICATION",
         review.application_id,
         {
-            "actor_role": current_user["role"],
-            "actor_id": current_user["username"],
+            "actor_role": "OFFICER",
+            "actor_id": review.officer_name,
             "decision": review.decision,
             "remarks": review.remarks,
             "flag_id": flag["flag_id"],
@@ -583,10 +570,9 @@ def create_officer_review(
 
 
 @app.get("/officer-reviews")
-def get_officer_reviews(
-    current_user: dict = Depends(require_officer),
-):
+def get_officer_reviews():
     return list(reversed(officer_reviews))
+
 
 # --------------------------------------------------
 # AUDIT LOGS
@@ -595,8 +581,3 @@ def get_officer_reviews(
 @app.get("/audit-logs")
 def get_audit_logs():
     return list(reversed(audit_logs[-100:]))
-@app.get("/auth/me")
-def get_my_profile(
-    current_user: dict = Depends(get_current_user),
-):
-    return current_user
