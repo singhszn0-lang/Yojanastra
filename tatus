@@ -1,0 +1,264 @@
+[1mdiff --git a/main.py b/main.py[m
+[1mindex 65aad07..ef148d1 100644[m
+[1m--- a/main.py[m
+[1m+++ b/main.py[m
+[36m@@ -1,10 +1,20 @@[m
+[31m-[m
+[32m+[m[32mimport os[m
+[32m+[m[32mimport jwt[m
+[32m+[m
+[32m+[m[32mfrom datetime import timedelta[m
+[32m+[m[32mfrom fastapi import Depends[m
+[32m+[m[32mfrom fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm[m
+[32m+[m[32mfrom pwdlib import PasswordHash[m
+[32m+[m[32mfrom eligibility import check_eligibility[m
+ from datetime import datetime, timezone[m
+ from typing import Literal, Optional[m
+[31m-[m
+[32m+[m[32mfrom evidence import generate_evidence[m
+ from fastapi import FastAPI, HTTPException[m
+ from fastapi.middleware.cors import CORSMiddleware[m
+ from pydantic import BaseModel, Field[m
+[32m+[m[32mfrom datetime import timedelta[m
+[32m+[m[32mfrom fastapi import Depends[m
+[32m+[m[32mfrom fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm[m
+ [m
+ [m
+ app = FastAPI([m
+[36m@@ -13,6 +23,112 @@[m [mapp = FastAPI([m
+     version="1.0.0",[m
+ )[m
+ [m
+[32m+[m[32mfrom datetime import datetime, timezone[m
+[32m+[m[32mimport jwt[m
+[32m+[m[32mimport os[m
+[32m+[m[32mfrom pwdlib import PasswordHash[m
+[32m+[m
+[32m+[m[32mJWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")[m
+[32m+[m[32mif not JWT_SECRET_KEY:[m
+[32m+[m[32m    raise RuntimeError("JWT_SECRET_KEY is missing")[m
+[32m+[m
+[32m+[m[32mJWT_ALGORITHM = "HS256"[m
+[32m+[m[32mACCESS_TOKEN_EXPIRE_MINUTES = 30[m
+[32m+[m
+[32m+[m[32mpassword_hash = PasswordHash.recommended()[m
+[32m+[m
+[32m+[m
+[32m+[m[32m# Development demo account only.[m
+[32m+[m[32m# Replace with database-backed users before deployment.[m
+[32m+[m[32mDEMO_USERS = {[m
+[32m+[m[32m    "officer": {[m
+[32m+[m[32m        "username": "officer",[m
+[32m+[m[32m        "password_hash": password_hash.hash("DemoPass123!"),[m
+[32m+[m[32m        "role": "OFFICER",[m
+[32m+[m[32m    }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mdef create_access_token(username: str, role: str):[m
+[32m+[m[32m    expires = datetime.now(timezone.utc) + timedelta([m
+[32m+[m[32m        minutes=ACCESS_TOKEN_EXPIRE_MINUTES[m
+[32m+[m[32m    )[m
+[32m+[m[32m    payload = {"sub": username, "role": role, "exp": expires}[m
+[32m+[m[32m    return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)[m
+[32m+[m
+[32m+[m[32m@app.post("/auth/login")[m
+[32m+[m[32mdef login(form: OAuth2PasswordRequestForm = Depends()):[m
+[32m+[m[32m    user = DEMO_USERS.get(form.username)[m
+[32m+[m
+[32m+[m[32m    if not user or not password_hash.verify([m
+[32m+[m[32m        form.password, user["password_hash"][m
+[32m+[m[32m    ):[m
+[32m+[m[32m        raise HTTPException(status_code=401, detail="Invalid username or password")[m
+[32m+[m
+[32m+[m[32m    token = create_access_token(user["username"], user["role"])[m
+[32m+[m[32m    return {[m
+[32m+[m[32m        "access_token": token,[m
+[32m+[m[32m        "token_type": "bearer",[m
+[32m+[m[32m        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,[m
+[32m+[m[32m    }[m
+[32m+[m[32moauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")[m
+[32m+[m[32mdef get_current_user(token: str = Depends(oauth2_scheme)):[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        payload = jwt.decode([m
+[32m+[m[32m            token,[m
+[32m+[m[32m            JWT_SECRET_KEY,[m
+[32m+[m[32m            algorithms=[JWT_ALGORITHM],[m
+[32m+[m[32m        )[m
+[32m+[m[32m        username = payload.get("sub")[m
+[32m+[m[32m        role = payload.get("role")[m
+[32m+[m
+[32m+[m[32m        if not username or not role:[m
+[32m+[m[32m            raise HTTPException(status_code=401, detail="Invalid token")[m
+[32m+[m
+[32m+[m[32m        return {"username": username, "role": role}[m
+[32m+[m
+[32m+[m[32m    except jwt.InvalidTokenError:[m
+[32m+[m[32m        raise HTTPException([m
+[32m+[m[32m            status_code=401,[m
+[32m+[m[32m            detail="Invalid or expired token",[m
+[32m+[m[32m            headers={"WWW-Authenticate": "Bearer"},[m
+[32m+[m[32m        )[m
+[32m+[m
+[32m+[m[32mdef require_officer([m
+[32m+[m[32m    current_user: dict = Depends(get_current_user),[m
+[32m+[m[32m):[m
+[32m+[m[32m    if current_user["role"] != "OFFICER":[m
+[32m+[m[32m        raise HTTPException([m
+[32m+[m[32m            status_code=403,[m
+[32m+[m[32m            detail="Officer access required",[m
+[32m+[m[32m        )[m
+[32m+[m[32m    return current_user[m
+[32m+[m
+[32m+[m[32m    if not user or not password_hash.verify([m
+[32m+[m[32m        form.password, user["password_hash"][m
+[32m+[m[32m    ):[m
+[32m+[m[32m        raise HTTPException(status_code=401, detail="Invalid username or password")[m
+[32m+[m
+[32m+[m[32m    token = create_access_token(user["username"], user["role"])[m
+[32m+[m[32m    return {[m
+[32m+[m[32m        "access_token": token,[m
+[32m+[m[32m        "token_type": "bearer",[m
+[32m+[m[32m        "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32mJWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")[m
+[32m+[m
+[32m+[m[32mif not JWT_SECRET_KEY:[m
+[32m+[m[32m    raise RuntimeError([m
+[32m+[m[32m        "JWT_SECRET_KEY environment variable is missing"[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32mJWT_ALGORITHM = "HS256"[m
+[32m+[m[32mACCESS_TOKEN_EXPIRE_MINUTES = 30[m
+[32m+[m
+[32m+[m[32mpassword_hash = PasswordHash.recommended()[m
+[32m+[m
+[32m+[m[32moauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")[m
+[32m+[m
+ # Development only. Restrict origins before public deployment.[m
+ app.add_middleware([m
+     CORSMiddleware,[m
+[36m@@ -78,6 +194,11 @@[m [mclass ApplicationCreate(BaseModel):[m
+     annual_income: Optional[float] = Field(default=None, ge=0)[m
+     household_id: Optional[str] = Field(default=None, max_length=100)[m
+ [m
+[32m+[m[32mclass EligibilityCheckRequest(BaseModel):[m
+[32m+[m[32m    scheme_id: Optional[int] = None[m
+[32m+[m[32m    annual_income: Optional[float] = None[m
+[32m+[m[32m    age: Optional[int] = None[m
+[32m+[m[32m    residence: Optional[str] = None[m
+ [m
+ class OfficerReviewCreate(BaseModel):[m
+     application_id: int = Field(gt=0)[m
+[36m@@ -120,7 +241,24 @@[m [mdef add_audit(action, entity_type, entity_id, details):[m
+ # --------------------------------------------------[m
+ # HOME AND HEALTH[m
+ # --------------------------------------------------[m
+[32m+[m[32m@app.post("/eligibility/check")[m
+[32m+[m[32mdef eligibility_check_api([m
+[32m+[m[32m    applicant: EligibilityCheckRequest[m
+[32m+[m[32m):[m
+[32m+[m[32m    applicant_data = applicant.model_dump()[m
+ [m
+[32m+[m[32m    result = check_eligibility(applicant_data)[m
+[32m+[m
+[32m+[m[32m    evidence_result = generate_evidence([m
+[32m+[m[32m        applicant_data,[m
+[32m+[m[32m        result[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    return {[m
+[32m+[m[32m        **result,[m
+[32m+[m[32m        "evidence": evidence_result["evidence"],[m
+[32m+[m[32m        "evidence_note": evidence_result["note"][m
+[32m+[m[32m    }[m
+ @app.get("/")[m
+ def home():[m
+     return {[m
+[36m@@ -345,7 +483,27 @@[m [mdef get_duplicate_flags(review_status: Optional[str] = "PENDING"):[m
+ # --------------------------------------------------[m
+ [m
+ @app.post("/officer-reviews", status_code=201)[m
+[31m-def create_officer_review(review: OfficerReviewCreate):[m
+[32m+[m
+[32m+[m[32m# --------------------------------------------------[m
+[32m+[m[32m# OFFICER REVIEW[m
+[32m+[m[32m# --------------------------------------------------[m
+[32m+[m
+[32m+[m[32mdef require_officer([m
+[32m+[m[32m    current_user: dict = Depends(get_current_user),[m
+[32m+[m[32m):[m
+[32m+[m[32m    if current_user["role"] != "OFFICER":[m
+[32m+[m[32m        raise HTTPException([m
+[32m+[m[32m            status_code=403,[m
+[32m+[m[32m            detail="Officer access required",[m
+[32m+[m[32m        )[m
+[32m+[m[32m    return current_user[m
+[32m+[m
+[32m+[m
+[32m+[m[32m@app.post("/officer-reviews", status_code=201)[m
+[32m+[m[32mdef create_officer_review([m
+[32m+[m[32m    review: OfficerReviewCreate,[m
+[32m+[m[32m    current_user: dict = Depends(require_officer),[m
+[32m+[m[32m):[m
+     global next_review_id[m
+ [m
+     flag = next([m
+[36m@@ -374,14 +532,13 @@[m [mdef create_officer_review(review: OfficerReviewCreate):[m
+     saved_review = {[m
+         "review_id": review_id,[m
+         "application_id": review.application_id,[m
+[31m-        "officer_name": review.officer_name,[m
+[32m+[m[32m        "officer_name": current_user["username"],[m
+         "decision": review.decision,[m
+         "remarks": review.remarks,[m
+         "created_at": now_utc(),[m
+     }[m
+ [m
+     officer_reviews.append(saved_review)[m
+[31m-[m
+     flag["review_status"] = review.decision[m
+ [m
+     application = next([m
+[36m@@ -392,7 +549,6 @@[m [mdef create_officer_review(review: OfficerReviewCreate):[m
+         None,[m
+     )[m
+ [m
+[31m-    # Update application status only for explicit final decisions.[m
+     if application:[m
+         if review.decision == "APPROVE":[m
+             application["status"] = "APPROVED"[m
+[36m@@ -409,8 +565,8 @@[m [mdef create_officer_review(review: OfficerReviewCreate):[m
+         "APPLICATION",[m
+         review.application_id,[m
+         {[m
+[31m-            "actor_role": "OFFICER",[m
+[31m-            "actor_id": review.officer_name,[m
+[32m+[m[32m            "actor_role": current_user["role"],[m
+[32m+[m[32m            "actor_id": current_user["username"],[m
+             "decision": review.decision,[m
+             "remarks": review.remarks,[m
+             "flag_id": flag["flag_id"],[m
+[36m@@ -427,10 +583,11 @@[m [mdef create_officer_review(review: OfficerReviewCreate):[m
+ [m
+ [m
+ @app.get("/officer-reviews")[m
+[31m-def get_officer_reviews():[m
+[32m+[m[32mdef get_officer_reviews([m
+[32m+[m[32m    current_user: dict = Depends(require_officer),[m
+[32m+[m[32m):[m
+     return list(reversed(officer_reviews))[m
+ [m
+[31m-[m
+ # --------------------------------------------------[m
+ # AUDIT LOGS[m
+ # --------------------------------------------------[m
+[36m@@ -438,3 +595,8 @@[m [mdef get_officer_reviews():[m
+ @app.get("/audit-logs")[m
+ def get_audit_logs():[m
+     return list(reversed(audit_logs[-100:]))[m
+[32m+[m[32m@app.get("/auth/me")[m
+[32m+[m[32mdef get_my_profile([m
+[32m+[m[32m    current_user: dict = Depends(get_current_user),[m
+[32m+[m[32m):[m
+[32m+[m[32m    return current_user[m
