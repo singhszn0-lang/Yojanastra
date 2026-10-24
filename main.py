@@ -16,13 +16,14 @@ from fastapi.security import (
     OAuth2PasswordRequestForm,
 )
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import String, func
 from sqlalchemy.orm import Session
 
 import models
 from database import get_db
 from models import Application, Scheme, DuplicateFlag, OfficerReview
 from evidence import generate_evidence
+from eligibility import check_eligibility
 
 load_dotenv()
 
@@ -162,8 +163,6 @@ app.add_middleware(
 class ApplicationCreate(BaseModel):
     citizen_id: str = Field(min_length=1, max_length=100)
     scheme_id: int = Field(gt=0)
-    applicant_name: str = Field(min_length=1, max_length=150)
-    annual_income: Optional[float] = Field(default=None, ge=0)
     household_id: Optional[str] = Field(default=None, max_length=100)
 
 class EligibilityCheckRequest(BaseModel):
@@ -193,21 +192,16 @@ def now_utc():
     return datetime.now(timezone.utc).isoformat()
 
 
-def add_audit(action, entity_type, entity_id, details):
-    global next_log_id
-
-    audit_logs.append({
-        "log_id": next_log_id,
-        "actor_role": details.get("actor_role", "SYSTEM"),
-        "actor_id": details.get("actor_id", "system"),
-        "action": action,
-        "entity_type": entity_type,
-        "entity_id": entity_id,
-        "details": details,
-        "created_at": now_utc(),
-    })
-
-    next_log_id += 1
+def add_audit(db, action, entity_type, entity_id, details):
+    db.add(models.AuditLog(
+        actor_role=details.get("actor_role", "SYSTEM"),
+        actor_id=details.get("actor_id", "system"),
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        details=details,
+        created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+    ))
 
 
 # --------------------------------------------------
@@ -253,6 +247,29 @@ def health_check(db: Session = Depends(get_db)):
 # SCHEMES
 # --------------------------------------------------
 
+@app.get("/schemes")
+def get_schemes(db: Session = Depends(get_db)):
+    schemes = (
+        db.query(Scheme)
+        .order_by(Scheme.scheme_id)
+        .all()
+    )
+    return [
+        {
+            "scheme_id": scheme.scheme_id,
+            "name": scheme.scheme_name,
+            "category": scheme.eligible_categories,
+            "description": scheme.benefit_description,
+            "is_active": scheme.is_active,
+            "state": scheme.state,
+            "min_age": scheme.min_age,
+            "max_age": scheme.max_age,
+            "max_annual_income": scheme.max_annual_income,
+        }
+        for scheme in schemes
+    ]
+
+
 @app.get("/schemes/{scheme_id}")
 def get_scheme(scheme_id: int, db: Session = Depends(get_db)):
     scheme = db.query(Scheme).filter(
@@ -262,15 +279,17 @@ def get_scheme(scheme_id: int, db: Session = Depends(get_db)):
     if not scheme:
         raise HTTPException(404, "Scheme not found")
 
-    return scheme
-
-@app.get("/schemes/{scheme_id}")
-def get_scheme(scheme_id: int):
-    for scheme in schemes:
-        if scheme["scheme_id"] == scheme_id:
-            return scheme
-
-    raise HTTPException(status_code=404, detail="Scheme not found")
+    return {
+        "scheme_id": scheme.scheme_id,
+        "name": scheme.scheme_name,
+        "category": scheme.eligible_categories,
+        "description": scheme.benefit_description,
+        "is_active": scheme.is_active,
+        "state": scheme.state,
+        "min_age": scheme.min_age,
+        "max_age": scheme.max_age,
+        "max_annual_income": scheme.max_annual_income,
+    }
 
 
 # --------------------------------------------------
@@ -316,7 +335,6 @@ def create_application(
     application: ApplicationCreate,
     db: Session = Depends(get_db),
 ):
-    # 1. Validate the citizen ID sent by the frontend.
     try:
         citizen_id = int(application.citizen_id)
     except (TypeError, ValueError):
@@ -325,7 +343,6 @@ def create_application(
             detail="citizen_id must be a valid integer",
         )
 
-    # 2. Verify the citizen exists in PostgreSQL.
     citizen = (
         db.query(models.Citizen)
         .filter(models.Citizen.citizen_id == citizen_id)
@@ -338,7 +355,6 @@ def create_application(
             detail="Citizen not found. Register the citizen first.",
         )
 
-    # 3. Fetch the active scheme from PostgreSQL.
     scheme = (
         db.query(models.Scheme)
         .filter(
@@ -354,83 +370,72 @@ def create_application(
             detail="Active scheme not found",
         )
 
-    # Possible repeat application: same citizen + same scheme.
-    # This flags the case; it does NOT automatically reject it.
-    previous = next(
-        (
-            a for a in applications
-            if a["citizen_id"] == application.citizen_id
-            and a["scheme_id"] == application.scheme_id
-        ),
-        None,
+    previous = (
+        db.query(Application)
+        .filter(
+            Application.citizen_id == citizen_id,
+            Application.scheme_id == application.scheme_id,
+        )
+        .order_by(Application.application_id.desc())
+        .first()
     )
+    record = Application(
+        citizen_id=citizen_id,
+        scheme_id=application.scheme_id,
+        household_id=application.household_id,
+        application_date=datetime.now(timezone.utc).replace(tzinfo=None),
+        status="PENDING",
+    )
+    db.add(record)
+    db.flush()
 
-    application_id = next_application_id
-    next_application_id += 1
-
-    record = {
-        "application_id": application_id,
-        "citizen_id": application.citizen_id,
-        "scheme_id": application.scheme_id,
-        "scheme_name": scheme["name"],
-        "applicant_name": application.applicant_name,
-        "annual_income": application.annual_income,
-        "household_id": application.household_id,
-        "status": "PENDING",
-        "possible_duplicate": previous is not None,
-        "created_at": now_utc(),
-    }
-
-    applications.append(record)
-
-    flag_id = None
-
+    flag = None
     if previous:
-        flag_id = next_flag_id
-        next_flag_id += 1
-
-        duplicate_flags.append({
-            "flag_id": flag_id,
-            "application_id": application_id,
-            "matched_application_id": previous["application_id"],
-            "rule_code": "R1",
-            "reason": (
+        flag = DuplicateFlag(
+            application_id=record.application_id,
+            matched_application_id=previous.application_id,
+            rule_code="R1",
+            reason=(
                 "Same citizen and scheme found in an earlier application. "
                 "Human review required before any decision."
             ),
-            "review_status": "PENDING",
-            "created_at": now_utc(),
-        })
-
+            review_status="PENDING",
+            created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        )
+        db.add(flag)
+        db.flush()
         add_audit(
+            db,
             "POSSIBLE_DUPLICATE_FLAGGED",
             "APPLICATION",
-            application_id,
+            record.application_id,
             {
                 "actor_role": "SYSTEM",
                 "actor_id": "duplicate_checker",
-                "flag_id": flag_id,
-                "matched_application_id": previous["application_id"],
+                "flag_id": flag.flag_id,
+                "matched_application_id": previous.application_id,
             },
         )
 
     add_audit(
+        db,
         "APPLICATION_SUBMITTED",
         "APPLICATION",
-        application_id,
+        record.application_id,
         {
             "actor_role": "SYSTEM",
-            "actor_id": application.citizen_id,
+            "actor_id": str(citizen_id),
             "scheme_id": application.scheme_id,
         },
     )
+    db.commit()
 
     return {
         "message": "Application submitted successfully",
-        "application_id": application_id,
+        "application_id": record.application_id,
         "status": "PENDING",
         "possible_duplicate": previous is not None,
-        "flag_id": flag_id,
+        "flag_id": flag.flag_id if flag else None,
         "review_status": "PENDING" if previous else None,
     }
 
@@ -443,37 +448,64 @@ def create_application(
 def get_applications(
     status: Optional[str] = None,
     search: Optional[str] = None,
+    db: Session = Depends(get_db),
 ):
-    result = applications
-
+    query = (
+        db.query(Application, models.Citizen, Scheme)
+        .join(models.Citizen, Application.citizen_id == models.Citizen.citizen_id)
+        .join(Scheme, Application.scheme_id == Scheme.scheme_id)
+    )
     if status:
-        result = [
-            a for a in result
-            if a["status"].upper() == status.upper()
-        ]
-
+        query = query.filter(func.upper(Application.status) == status.upper())
     if search:
-        query = search.casefold()
-        result = [
-            a for a in result
-            if query in a["applicant_name"].casefold()
-            or query in a["citizen_id"].casefold()
-            or query in str(a["application_id"])
-        ]
+        pattern = f"%{search}%"
+        query = query.filter(
+            models.Citizen.full_name.ilike(pattern)
+            | func.cast(models.Citizen.citizen_id, String).ilike(pattern)
+            | func.cast(Application.application_id, String).ilike(pattern)
+            | Scheme.scheme_name.ilike(pattern)
+        )
 
-    return list(reversed(result))
+    return [
+        _application_response(application, citizen, scheme, db)
+        for application, citizen, scheme in
+        query.order_by(Application.application_id.desc()).all()
+    ]
 
 
 @app.get("/applications/{application_id}")
-def get_application(application_id: int):
-    for application in applications:
-        if application["application_id"] == application_id:
-            return application
-
-    raise HTTPException(
-        status_code=404,
-        detail="Application not found",
+def get_application(application_id: int, db: Session = Depends(get_db)):
+    row = (
+        db.query(Application, models.Citizen, Scheme)
+        .join(models.Citizen, Application.citizen_id == models.Citizen.citizen_id)
+        .join(Scheme, Application.scheme_id == Scheme.scheme_id)
+        .filter(Application.application_id == application_id)
+        .first()
     )
+    if not row:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return _application_response(*row, db)
+
+
+def _application_response(application, citizen, scheme, db):
+    has_duplicate = (
+        db.query(DuplicateFlag.flag_id)
+        .filter(DuplicateFlag.application_id == application.application_id)
+        .first()
+        is not None
+    )
+    return {
+        "application_id": application.application_id,
+        "citizen_id": str(citizen.citizen_id),
+        "applicant_name": citizen.full_name,
+        "annual_income": citizen.annual_income,
+        "scheme_id": scheme.scheme_id,
+        "scheme_name": scheme.scheme_name,
+        "household_id": application.household_id,
+        "status": application.status,
+        "possible_duplicate": has_duplicate,
+        "created_at": application.application_date,
+    }
 
 
 # --------------------------------------------------
@@ -481,16 +513,27 @@ def get_application(application_id: int):
 # --------------------------------------------------
 
 @app.get("/duplicate-flags")
-def get_duplicate_flags(review_status: Optional[str] = "PENDING"):
-    result = duplicate_flags
-
+def get_duplicate_flags(
+    review_status: Optional[str] = "PENDING",
+    db: Session = Depends(get_db),
+):
+    query = db.query(DuplicateFlag)
     if review_status:
-        result = [
-            f for f in result
-            if f["review_status"].upper() == review_status.upper()
-        ]
-
-    return list(reversed(result))
+        query = query.filter(
+            func.upper(DuplicateFlag.review_status) == review_status.upper()
+        )
+    return [
+        {
+            "flag_id": flag.flag_id,
+            "application_id": flag.application_id,
+            "matched_application_id": flag.matched_application_id,
+            "rule_code": flag.rule_code,
+            "reason": flag.reason,
+            "review_status": flag.review_status,
+            "created_at": flag.created_at,
+        }
+        for flag in query.order_by(DuplicateFlag.flag_id.desc()).all()
+    ]
 
 
 # --------------------------------------------------
@@ -498,85 +541,67 @@ def get_duplicate_flags(review_status: Optional[str] = "PENDING"):
 # --------------------------------------------------
 
 @app.post("/officer-reviews", status_code=201)
-def create_officer_review(review: OfficerReviewCreate):
-    global next_review_id
-
-    flag = next(
-        (
-            f for f in reversed(duplicate_flags)
-            if f["application_id"] == review.application_id
-        ),
-        None,
+def create_officer_review(
+    review: OfficerReviewCreate,
+    current_user: dict = Depends(require_officer),
+    db: Session = Depends(get_db),
+):
+    flag = (
+        db.query(DuplicateFlag)
+        .filter(DuplicateFlag.application_id == review.application_id)
+        .order_by(DuplicateFlag.flag_id.desc())
+        .first()
     )
-
     if not flag:
         raise HTTPException(
-            status_code=422,
-            detail="Citizen does not meet the scheme's maximum age rule",
+            status_code=404,
+            detail="Duplicate flag not found for this application",
         )
 
-    if (
-        scheme.max_annual_income is not None
-        and citizen.annual_income is not None
-        and citizen.annual_income > scheme.max_annual_income
-    ):
+    if flag.review_status not in ("PENDING", "NEEDS_INFO"):
         raise HTTPException(
             status_code=409,
             detail="This flag has already received a final review",
         )
 
-    review_id = next_review_id
-    next_review_id += 1
-
-    saved_review = {
-        "review_id": review_id,
-        "application_id": review.application_id,
-        "officer_name": review.officer_name,
-        "decision": review.decision,
-        "remarks": review.remarks,
-        "created_at": now_utc(),
-    }
-
-    officer_reviews.append(saved_review)
-
-    flag["review_status"] = review.decision
-
-    application = next(
-        (
-            a for a in applications
-            if a["application_id"] == review.application_id
-        ),
-        None,
+    saved_review = OfficerReview(
+        application_id=review.application_id,
+        officer_name=current_user["username"],
+        decision=review.decision,
+        remarks=review.remarks,
+        reviewed_at=datetime.now(timezone.utc).replace(tzinfo=None),
     )
+    db.add(saved_review)
+    flag.review_status = review.decision
 
-    # Update application status only for explicit final decisions.
+    application = db.query(Application).filter(
+        Application.application_id == review.application_id
+    ).first()
     if application:
         if review.decision == "APPROVE":
-            application["status"] = "APPROVED"
+            application.status = "APPROVED"
         elif review.decision == "REJECT":
-            application["status"] = "REJECTED"
-        elif review.decision == "CONFIRMED_DUPLICATE":
-            application["status"] = "PENDING"
-        elif review.decision == "NOT_DUPLICATE":
-            application["possible_duplicate"] = False
-            application["status"] = "PENDING"
-
+            application.status = "REJECTED"
+        else:
+            application.status = "PENDING"
     add_audit(
+        db,
         "OFFICER_REVIEW_SUBMITTED",
         "APPLICATION",
         review.application_id,
         {
-            "actor_role": "OFFICER",
-            "actor_id": review.officer_name,
+            "actor_role": current_user["role"],
+            "actor_id": current_user["username"],
             "decision": review.decision,
             "remarks": review.remarks,
-            "flag_id": flag["flag_id"],
+            "flag_id": flag.flag_id,
         },
     )
+    db.commit()
 
     return {
         "message": "Officer review saved successfully",
-        "review_id": review_id,
+        "review_id": saved_review.review_id,
         "application_id": review.application_id,
         "decision": review.decision,
         "review_status": flag["review_status"],
@@ -584,8 +609,26 @@ def create_officer_review(review: OfficerReviewCreate):
 
 
 @app.get("/officer-reviews")
-def get_officer_reviews():
-    return list(reversed(officer_reviews))
+def get_officer_reviews(
+    current_user: dict = Depends(require_officer),
+    db: Session = Depends(get_db),
+):
+    reviews = (
+        db.query(OfficerReview)
+        .order_by(OfficerReview.review_id.desc())
+        .all()
+    )
+    return [
+        {
+            "review_id": review.review_id,
+            "application_id": review.application_id,
+            "officer_name": review.officer_name,
+            "decision": review.decision,
+            "remarks": review.remarks,
+            "created_at": review.reviewed_at,
+        }
+        for review in reviews
+    ]
 
 
 # --------------------------------------------------
@@ -593,5 +636,28 @@ def get_officer_reviews():
 # --------------------------------------------------
 
 @app.get("/audit-logs")
-def get_audit_logs():
-    return list(reversed(audit_logs[-100:]))
+def get_audit_logs(db: Session = Depends(get_db)):
+    logs = (
+        db.query(models.AuditLog)
+        .order_by(models.AuditLog.log_id.desc())
+        .limit(100)
+        .all()
+    )
+    return [
+        {
+            "log_id": log.log_id,
+            "actor_role": log.actor_role,
+            "actor_id": log.actor_id,
+            "action": log.action,
+            "entity_type": log.entity_type,
+            "entity_id": log.entity_id,
+            "details": log.details,
+            "created_at": log.created_at,
+        }
+        for log in logs
+    ]
+
+
+@app.get("/auth/me")
+def get_my_profile(current_user: dict = Depends(get_current_user)):
+    return current_user

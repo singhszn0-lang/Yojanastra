@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 import "./YojanastraExtras.css";
+import { API_BASE_URL } from "./api";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const API_BASE = API_BASE_URL;
 
 async function api(path, options = {}) {
   const token = sessionStorage.getItem("yojanastra_token");
@@ -91,7 +92,7 @@ const [password, setPassword] = useState("");
 const [loginLoading, setLoginLoading] = useState(false);
 
   const [applicationForm, setApplicationForm] = useState({
-    citizen_id: "", applicant_name: "", scheme_id: "", annual_income: "", household_id: ""
+    citizen_id: "", scheme_id: "", household_id: ""
   });
   const [eligibilityForm, setEligibilityForm] = useState({
     scheme_id: "", annual_income: "", age: "", residence: ""
@@ -108,7 +109,7 @@ const loadAll = useCallback(async () => {
     api("/applications"),
     api("/schemes"),
     api("/duplicate-flags?review_status="),
-    api("/officer-reviews"),
+    token ? api("/officer-reviews") : Promise.resolve([]),
     api("/audit-logs"),
     api("/dashboard/stats"),
   ];
@@ -153,12 +154,12 @@ const loadAll = useCallback(async () => {
 
   if (failed.length > 0) {
     setError(
-      `Failed API requests: ${failed.map(item => item.path).join(", ")}. Check authentication and backend logs.`
+      `Backend requests failed: ${failed.map(item => `${item.path} (${item.result.reason.message})`).join("; ")}`
     );
   }
 
   setLoading(false);
-}, []);
+}, [token]);
 
 
 async function handleLogin(event) {
@@ -209,7 +210,7 @@ function handleLogout() {
 
 
 useEffect(() => {
-  loadAll();
+  void Promise.resolve().then(loadAll);
 }, [loadAll, token]);
 
 
@@ -231,13 +232,11 @@ useEffect(() => {
     try {
       const payload = {
         citizen_id: applicationForm.citizen_id.trim(),
-        applicant_name: applicationForm.applicant_name.trim(),
         scheme_id: Number(applicationForm.scheme_id),
-        annual_income: applicationForm.annual_income === "" ? null : Number(applicationForm.annual_income),
         household_id: applicationForm.household_id.trim() || null,
       };
       const result = await api("/applications", { method: "POST", body: JSON.stringify(payload) });
-      setApplicationForm({ citizen_id: "", applicant_name: "", scheme_id: "", annual_income: "", household_id: "" });
+      setApplicationForm({ citizen_id: "", scheme_id: "", household_id: "" });
       flash(`Application #${result.application_id} submitted. Status: ${result.status}${result.possible_duplicate ? " — flagged for officer review." : "."}`);
       await loadAll();
       setPage("Applications");
@@ -322,7 +321,7 @@ useEffect(() => {
           <span className="nav-icon">{icon}</span>{label}
         </button>)}
       </nav>
-      <div className="sidebar-note"><strong><span className="online-dot" /> Demo environment</strong><p>Data is currently stored in backend memory and resets when the backend restarts.</p></div>
+      <div className="sidebar-note"><strong><span className="online-dot" /> PostgreSQL connected</strong><p>Application, scheme, review, and audit data is loaded from the backend database.</p></div>
     </aside>
 
     <main className="main-content">
@@ -349,7 +348,7 @@ useEffect(() => {
           <ApplicationsTable rows={applications.slice(0, 5)} onView={setSelectedApp} />
         </Panel>
         <div className="two-column-panels"><Panel title="Review Queue" description="Possible duplicates requiring attention"><p className="summary-number">{flags.filter(f => ["PENDING", "NEEDS_INFO"].includes(f.review_status)).length}</p><button className="primary-button action-button" onClick={() => setPage("Duplicate Review")}>Open duplicate review</button></Panel>
-        <Panel title="System status" description="Current demo configuration"><p>API: <strong>{error ? "Check connection" : "FastAPI"}</strong></p><p>Storage: <strong>In-memory mock data</strong></p><p>Database: <strong>Not connected</strong></p></Panel></div>
+        <Panel title="System status" description="Current configuration"><p>API: <strong>{error ? "Check connection" : "FastAPI"}</strong></p><p>Storage: <strong>PostgreSQL</strong></p><p>Database: <strong>{error ? "Check connection" : "Connected"}</strong></p></Panel></div>
       </>}
 
       {page === "Applications" && <Panel title="Applications" description="Search by applicant, citizen ID, application ID or scheme." action={<button className="primary-button action-button" onClick={() => setPage("Submit Application")}>+ New application</button>}>
@@ -357,14 +356,12 @@ useEffect(() => {
         <ApplicationsTable rows={filteredApps} onView={setSelectedApp} />
       </Panel>}
 
-      {page === "Submit Application" && <Panel title="Submit a demo application" description="Required fields marked *. Use synthetic test information only.">
+      {page === "Submit Application" && <Panel title="Submit an application" description="Use a citizen already registered in the backend database.">
         <form className="data-form" onSubmit={submitApplication}>
-          <label>Applicant full name *<input required maxLength="150" value={applicationForm.applicant_name} onChange={e => setApplicationForm({...applicationForm, applicant_name:e.target.value})} placeholder="e.g. Aarav Sharma" /></label>
-          <label>Citizen ID *<input required maxLength="100" value={applicationForm.citizen_id} onChange={e => setApplicationForm({...applicationForm, citizen_id:e.target.value})} placeholder="e.g. DEMO-CITIZEN-101" /></label>
+          <label>Registered citizen ID *<input required maxLength="100" value={applicationForm.citizen_id} onChange={e => setApplicationForm({...applicationForm, citizen_id:e.target.value})} placeholder="Enter the registered citizen ID" /></label>
           <label>Scheme *<select required value={applicationForm.scheme_id} onChange={e => setApplicationForm({...applicationForm, scheme_id:e.target.value})}><option value="">Select a scheme</option>{schemes.filter(s => s.is_active).map(s => <option key={s.scheme_id} value={s.scheme_id}>{s.name}</option>)}</select></label>
-          <label>Annual income (₹)<input type="number" min="0" step="1" value={applicationForm.annual_income} onChange={e => setApplicationForm({...applicationForm, annual_income:e.target.value})} placeholder="e.g. 120000" /></label>
           <label>Household ID<input maxLength="100" value={applicationForm.household_id} onChange={e => setApplicationForm({...applicationForm, household_id:e.target.value})} placeholder="Optional synthetic household ID" /></label>
-          <div className="form-actions"><button className="primary-button" type="submit">Submit application</button><button className="secondary-button" type="button" onClick={() => setApplicationForm({citizen_id:"",applicant_name:"",scheme_id:"",annual_income:"",household_id:""})}>Clear form</button></div>
+          <div className="form-actions"><button className="primary-button" type="submit">Submit application</button><button className="secondary-button" type="button" onClick={() => setApplicationForm({citizen_id:"",scheme_id:"",household_id:""})}>Clear form</button></div>
         </form>
       </Panel>}
 
